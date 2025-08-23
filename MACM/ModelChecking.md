@@ -1,4 +1,4 @@
-# Graph Database Validation Rules
+# MACM Graph Database Validation Rules
 
 This document describes a set of **validation rules for nodes and relationships** in a graph database (Neo4j with APOC triggers). The purpose of these rules is to ensure **data integrity, consistency, and semantic correctness** across different types of assets (HW, Virtual, SoftLayer, Service, Network, Party, CSP).
 
