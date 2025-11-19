@@ -62,6 +62,7 @@ CALL apoc.trigger.add(
          {pl:"Virtual",sl:"Container",types:["Virtual.Container"]},
          {pl:"Service",sl:"5G",types:["Service.5G.RAN","Service.5G.AMF","Service.5G.AUSF","Service.5G.NEF","Service.5G.NRF","Service.5G.NSSF","Service.5G.NWDAF","Service.5G.PCF","Service.5G.UDM","Service.5G.UPF"]},
          {pl:"Service",sl:"App",types:["Service.App","Service.Browser","Service.MQTTClient"]},
+         {pl:"Service",sl:null,types:["Service"]},
          {pl:"Service",sl:"Server",types:["Service.JobScheduler","Service.SSH","Service.Web","Service.API","Service.DB","Service.NoSQLDB","Service.IDProvider","Service.MQTTBroker","Service.RPCBind"]}
        ] AS mapping
 
@@ -101,59 +102,85 @@ CALL apoc.trigger.add(
 
 ---
 
-## Rule 2: Single Hosting/Providing for Services
-Each `Service` node must be hosted or provided by **exactly one** other node. No service can be orphaned or have multiple hosts.
+## Rule 2: Single Hosting/Providing per Asset
+Each asset must be hosted or provided by **at most** one other node. No service can have multiple hosts or provider.
 
 ```cypher
 CALL apoc.trigger.add(
-  'check_single_host_provide_for_service',
-  '
-  MATCH (s:Service)
-  OPTIONAL MATCH (hoster)-[r]->(s)
-  WHERE type(r) IN ["hosts","provides"]
-  WITH s, COUNT(DISTINCT hoster) AS numHosts
-  WHERE numHosts <> 1
-  WITH collect(s.name) AS violations
-  CALL apoc.util.validate(
-    size(violations) > 0,
-    "Rule 2 violation: the following service do not have exactly a host/try:" + apoc.text.join (violations, ","),
-    []
-  )
-  RETURN true
-  ',
-  {phase:'before'}
+	'check_single_host_provide_per_asset',
+	'
+	MATCH (s)
+	OPTIONAL MATCH (hoster)-[r]->(s)
+	WHERE type(r) IN ["hosts","provides"]
+	WITH s, COUNT(DISTINCT hoster) AS numHosts
+	WHERE numHosts > 1
+	WITH collect(s.name) AS violations
+	CALL apoc.util.validate(
+		size(violations) > 0,
+		"/*Rule 2 violation: the following service has more than a host/provider:" + apoc.text.join (violations, ",") + "*/",
+		[]
+	)
+	RETURN true
+	',
+	{phase:'before'}
 );
 ```
 
 ---
 
-## Rule 3: Alternate Path for `uses` Relationships
+## Rule 3: Mandatory Hosting/Providing for Services
+Each `Service` node must be hosted or provided by **at least** one other node. No service can be orphaned.
+
+```cypher
+CALL apoc.trigger.add(
+	'check_mandatory_host_provide_for_service',
+	'
+	MATCH (s:Service)
+	OPTIONAL MATCH (hoster)-[r]->(s)
+	WHERE type(r) IN ["hosts","provides"]
+	WITH s, COUNT(DISTINCT hoster) AS numHosts
+	WHERE numHosts < 1
+	WITH collect(s.name) AS violations
+	CALL apoc.util.validate(
+		size(violations) > 0,
+		"/*Rule 3 violation: the following service do not have a host/provider:" + apoc.text.join (violations, ",") + "*/",
+		[]
+	)
+	RETURN true
+	',
+	{phase:'before'}
+);
+```
+
+---
+
+## Rule 4: Alternate Path for `uses` Relationships
 Every `uses` relationship must have an alternative path between the two nodes without relying on another `uses`.
 
 ```cypher
 CALL apoc.trigger.add(
-  'check_alternate_path_for_uses',
-  '
-  MATCH (a)-[r:uses]->(b)
-  WHERE NOT EXISTS {
-  MATCH p=(a)-[*]-(b)
-  WHERE ALL(rel IN relationships(p) WHERE type(rel) <> "uses")
-  }
-  WITH collect(a.name + "->" + b.name) AS violazioni
-  CALL apoc.util.validate(
-  size(violazioni) > 0,
-  "Regola 3 violata: Relazioni uses senza percorso alternativo: " + apoc.text.join(violazioni, ", "),
-  []
-  )
-  RETURN true
-  ',
-  {phase: 'before'}
+	'check_alternate_path_for_uses',
+	'
+	MATCH (a)-[r:uses]->(b)
+	WHERE NOT EXISTS {
+		MATCH p=(a)-[*]-(b)
+		WHERE ALL(rel IN relationships(p) WHERE type(rel) <> "uses")
+	}
+	WITH collect(a.name + "->" + b.name) AS violazioni
+	CALL apoc.util.validate(
+		size(violazioni) > 0,
+		"/*Rule 4 violation: uses relationships without alternative path: " + apoc.text.join(violazioni, ", ") + "*/",
+		[]
+	)
+	RETURN true
+	',
+	{phase: 'before'}
 );
 ```
 
 ---
 
-## Rule 4: Valid Hosting among SystemLayer Nodes
+## Rule 5: Valid Hosting among SystemLayer Nodes
 Only `SystemLayer.OS` nodes may host containerization or virtualization environments.
 
 ```cypher
@@ -171,7 +198,7 @@ CALL apoc.trigger.add(
 	WITH collect(src.name + " hosts " + dst.name) AS violazioni
 	CALL apoc.util.validate(
 		size(violazioni) > 0,
-		"Rule 4 violation: hosting relationships between SystemLayer nodes not valid: " + apoc.text.join(violazioni, ", "),
+		"/*Rule 5 violation: hosting relationships between SystemLayer nodes not valid: " + apoc.text.join(violazioni, ", ")+"*/",
 		[]
 		)
 	RETURN true
@@ -182,7 +209,7 @@ CALL apoc.trigger.add(
 
 ---
 
-## Rule 5: SystemLayer Hosting Virtual
+## Rule 6: SystemLayer Hosting Virtual
 - `ContainerRuntime` can only host `Virtual.Container`.
 - `HyperVisor` can only host `Virtual.VM`.
 
@@ -201,7 +228,7 @@ CALL apoc.trigger.add(
 	WITH collect(src.name + " hosts " + dst.name) AS violazioni
 	CALL apoc.util.validate(
 		size(violazioni) > 0,
-		"Rule 5 violation: hosting relationships between SystemLayer and Virtual nodes not valid: " + apoc.text.join(violazioni, ", "),
+		"/*Rule 6 violation: hosting relationships between SystemLayer and Virtual nodes not valid: " + apoc.text.join(violazioni, ", ")+"*/",
 		[]
 	)
 	RETURN true
@@ -212,7 +239,33 @@ CALL apoc.trigger.add(
 
 ---
 
-## Rule 6: Virtual Hosting SystemLayer
+## Rule 7: SystemLayer Hosting Service
+`Service` nodes can only be hosted by `SystemLayer.OS` and `SystemLayer.Firmware` assets.
+
+```cypher 
+CALL apoc.trigger.add(
+	'check_SystemLayer_hosts_services',
+	'
+	MATCH (src)-[r:hosts]->(dst)
+	WHERE head(labels(src)) = "SystemLayer"
+	AND head(labels(dst)) = "Service"
+	AND NOT src.type IN ["SystemLayer.Firmware", "SystemLayer.OS"]
+	
+	WITH collect(src.name + " (type: " + src.type + ")" + " hosts " + dst.name) AS violazioni
+	CALL apoc.util.validate(
+		size(violazioni) > 0,
+		"/*Rule 7 violation: hosting relationships between SystemLayer and Service nodes not valid: " + apoc.text.join(violazioni, ", ") + "*/",
+		[]
+	)
+	RETURN true
+	',
+	{phase: 'before'}
+);
+```
+
+---
+
+## Rule 8: Virtual Hosting SystemLayer
 If a `Virtual` node hosts a `SystemLayer`, the hosted node must be of type `SystemLayer.OS` or `SystemLayer.Firmware`.
 
 ```cypher
@@ -227,7 +280,7 @@ CALL apoc.trigger.add(
 	WITH collect(src.name + " hosts " + dst.name) AS violazioni
 	CALL apoc.util.validate(
 		size(violazioni) > 0,
-		"Rule 7 violation: hosting relationships between Virtual and SystemLayer nodes not valid: " + apoc.text.join(violazioni, ", "),
+		"/*Rule 8 violation: hosting relationships between Virtual and SystemLayer nodes not valid: " + apoc.text.join(violazioni, ", ") + "*/",
 		[]
 	)
 	RETURN true
@@ -238,7 +291,7 @@ CALL apoc.trigger.add(
 
 ---
 
-## Rule 7: HW Hosting SystemLayer
+## Rule 9: HW Hosting SystemLayer
 HW nodes cannot host `SystemLayer.ContainerRuntime`.
 
 ```cypher
@@ -253,7 +306,7 @@ CALL apoc.trigger.add(
 	WITH collect(src.name + " hosts " + dst.name) AS violazioni
 	CALL apoc.util.validate(
 		size(violazioni) > 0,
-		"Rule 8 violation: hosting relationships between HW and SystemLayer nodes not valid (ContainerRuntime not allowed): " + apoc.text.join(violazioni, ", "),
+		"/*Rule 9 violation: hosting relationships between HW and SystemLayer nodes not valid (ContainerRuntime not allowed): " + apoc.text.join(violazioni, ", ") + "*/",
 		[]
 	)
 	RETURN true
@@ -264,7 +317,7 @@ CALL apoc.trigger.add(
 
 ---
 
-## Rule 8: Protocol Validity on `connects` and `uses`
+## Rule 10: Protocol Validity on `connects` and `uses`
 Protocols defined in relationship properties must belong to a predefined set.
 
 ```cypher
@@ -359,6 +412,130 @@ CALL apoc.trigger.add(
 
 ---
 
+## Rule 11: Graph Connectivity
+The graph must be fully connected; there should be a path between any two nodes.
+
+```cypher
+CALL apoc.trigger.add(
+  'check_graph_connectivity_global',
+  '
+  // scegliamo un nodo a caso come sorgente
+  MATCH (start)
+  WITH start LIMIT 1
+
+  // percorsi di lunghezza 0.. → lo start è incluso nei reachable
+  MATCH (start)-[*0..]-(reachable)
+  WITH start, collect(DISTINCT id(reachable)) AS reachIds
+
+  // tutti i nodi del grafo
+  MATCH (n)
+  WITH start, reachIds, collect(id(n)) AS allIds
+  WITH start, reachIds, allIds, [x IN allIds WHERE NOT x IN reachIds] AS missingIds
+
+  // nodi non raggiungibili
+  OPTIONAL MATCH (m) WHERE id(m) IN missingIds
+  WITH start,
+       [m IN collect(m) | coalesce(m.name, head(labels(m)), toString(id(m)))] AS notReachable
+
+  CALL apoc.util.validate(
+    size(notReachable) > 0,
+    "/*Connectivity violation: the graph is not connected. Start node: "
+      + coalesce(start.name, head(labels(start)), toString(id(start)))
+      + ". Unreachable nodes: " + apoc.text.join(notReachable, ", ") + "*/",
+    []
+  )
+  RETURN true
+  ',
+  {phase: 'before'}
+);
+```
+
+---
+
+## Rule 12: Single host/provide per SystemLayer
+Each `SystemLayer` node must be hosted or provided by **exactly one** other node. No SystemLayer can be orphaned or have multiple hosts.
+
+```cypher
+CALL apoc.trigger.add(
+	'check_mandatory_host_provide_for_systemlayer',
+	'
+	MATCH (s:SystemLayer)
+	OPTIONAL MATCH (hoster)-[r]->(s)
+	WHERE type(r) IN ["hosts","provides"]
+	WITH s, COUNT(DISTINCT hoster) AS numHosts
+	WHERE numHosts < 1
+	WITH collect(s.name) AS violations
+	CALL apoc.util.validate(
+		size(violations) > 0,
+		"/*Rule 12 violation: the following SystemLayer do not have any host/provider:" + apoc.text.join (violations, ",") + "*/",
+		[]
+	)
+	RETURN true
+	',
+	{phase:'before'}
+);
+```
+
+---
+
+## Rule 13: Single host/provide per Virtual
+Each `Virtual` node must be hosted or provided by **exactly one** other node. No Virtual can be orphaned or have multiple hosts.
+```cypher
+CALL apoc.trigger.add(
+	'check_mandatory_host_provide_for_virtual',
+	'
+	MATCH (s:Virtual)
+	OPTIONAL MATCH (hoster)-[r]->(s)
+	WHERE type(r) IN ["hosts","provides"]
+	WITH s, COUNT(DISTINCT hoster) AS numHosts
+	WHERE numHosts < 1
+	WITH collect(s.name) AS violations
+	CALL apoc.util.validate(
+		size(violations) > 0,
+		"/*Rule 13 violation: the following Virtual do not have any host/provider:" + apoc.text.join (violations, ",") + "*/",
+		[]
+	)
+	RETURN true
+	',
+	{phase:'before'}
+);
+```
+
+---
+
+## Rule 14: No cycles allowed for hosts relationship
+Ensures acyclicity of the :hosts relation, preventing recursive or circular hosting dependencies among system assets.
+
+```cypher
+CALL apoc.trigger.add(
+  'check_hosts_acyclic_with_cycles',
+  '
+  MATCH p = (n)-[:hosts*1..]->(n)
+  WITH DISTINCT p,
+       [x IN nodes(p) | toString(coalesce(x.name, id(x)))] AS lst
+  WITH CASE
+         WHEN size(lst) > 1 AND lst[0] = lst[size(lst)-1] THEN lst[0..size(lst)-1]
+         ELSE lst
+       END AS core
+  WHERE size(core) > 0
+  WITH [i IN range(0, size(core)-1) |
+         apoc.text.join(core[i..] + core[..i] + [core[i]], " -> ")
+       ] AS rots
+  WITH apoc.coll.min(rots) AS cycleCanon
+  WITH apoc.coll.toSet(collect(cycleCanon)) AS cycles
+  CALL apoc.util.validate(
+    size(cycles) > 0,
+    "/*Constraint violation: cycles detected in :hosts hierarchy:\\n" + apoc.text.join(cycles[0..20], "\\n") + "*/",
+    []
+  )
+  RETURN true
+  ',
+  {phase:'before'}
+);
+```
+
+---
+
 ## Relationship Validity Pattern
 Only predefined relationship patterns are allowed.
 
@@ -385,6 +562,7 @@ CALL apoc.trigger.add(
     ["SystemLayer", "hosts",     "SystemLayer"],
     ["SystemLayer", "hosts",     "Virtual"],
     ["SystemLayer", "hosts",     "Service"],
+    ["SystemLayer",  "hosts",     "Network"],
     ["SystemLayer", "uses",      "HW"],
 
     ["HW",        "hosts",     "HW"],
@@ -398,7 +576,6 @@ CALL apoc.trigger.add(
 
     ["Network",   "connects",  "Network"],
     ["Network",   "connects",  "Virtual"],
-    ["Network",   "connects",  "SystemLayer"],
     ["Network",   "connects",  "HW"],
     ["Network",   "connects",  "CSP"]
   ] AS allowed,
@@ -419,7 +596,7 @@ CALL apoc.trigger.add(
   WITH collect(coalesce(primarySrc,"<no-PL>") + "-" + relType + "->" + coalesce(primaryDst,"<no-PL>")) AS violations
   CALL apoc.util.validate(
     size(violations) > 0,
-    "Constraint violated: Unauthorized relationship(s): " + apoc.text.join(violations, ", "),
+    "/*Constraint violated: Unauthorized relationship(s): " + apoc.text.join(violations, ", ")+"*/",
     []
   )
   RETURN true;
